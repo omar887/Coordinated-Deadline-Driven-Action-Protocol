@@ -12,35 +12,35 @@ header_size = struct.calcsize(header)
 client_socket = socket(AF_INET, SOCK_DGRAM)
 
 
-def now_ms():
-    return time.time() * 1000
+def now_us():
+    return time.time() * 1000000
 
 
 seq_num = 1
-t1 = int(now_ms())
+t1 = int(now_us())
 
 init_packet = struct.pack(header, 1, 1, 0, seq_num, t1, 0, 0)
 client_socket.sendto(init_packet, (server_ip, server_port))
 
 response, _ = client_socket.recvfrom(2048)
-t4 = int(now_ms())
+t4 = int(now_us())
 
 response_fields = struct.unpack(header, response[:header_size])
 t2 = response_fields[5]
 t3 = response_fields[6]
 
 offset = ((t2 - t1) + (t3 - t4)) / 2
-print("Clock offset:", offset, "milliseconds")
+print("Clock offset:", offset, "microseconds")
 
 pending = []
 
 try:
     while True:
-        while pending and pending[0][0] <= now_ms():
+        while pending and pending[0][0] <= now_us():
             target_local_time, command_seq, payload = heapq.heappop(pending)
 
             print("Executing action:", payload)
-            actual_local_time = now_ms()
+            actual_local_time = now_us()
             actual_server_time = int(actual_local_time + offset)
 
             confirmation = (
@@ -52,7 +52,7 @@ try:
             print("Confirmation sent to server. Sequence:", command_seq)
 
         if pending:
-            wait = max((pending[0][0] - now_ms()) / 1000, 0.001)
+            wait = max((pending[0][0] - now_us()) / 1000000, 0.000001)
         else:
             wait = None
 
@@ -76,7 +76,7 @@ try:
 
         target_local_time = target_server_time - offset
 
-        if target_local_time <= now_ms():
+        if target_local_time <= now_us():
             print("Command expired. Dropping command.")
         else:
             heapq.heappush(pending, (target_local_time, command_seq, payload))
