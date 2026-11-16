@@ -11,7 +11,7 @@ message,clientaddress=serversocket.recvfrom(2048)
 t2 = int(time.time()*1000000)
 header1=struct.unpack(header,message)
 seq_num = header1[3]
-t1=header[4]
+t1=header1[4]
 t3 = int(time.time()*1000000)
 send = struct.pack(header,1,1,0,seq_num,t1,t2,t3)
 serversocket.sendto(send,clientaddress)
