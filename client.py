@@ -9,53 +9,73 @@ server_port = 5677
 header = "!BBHIQQQ"
 header_size = struct.calcsize(header)
 
+VERSION = 1
+SYNC_REQUEST = 1
+SYNC_RESPONSE = 2
+ACTION_COMMAND = 3
+ACTION_CONFIRM = 4
+
+SYNC_INTERVAL_US = 5_000_000
+MIN_WAIT_S = 0.001
+
 client_socket = socket(AF_INET, SOCK_DGRAM)
 
 
 def now_us():
-    return time.time() * 1000000
+    return time.time_ns() // 1000
+
+
+def send_message(msg_type, seq, t1=0, t2=0, t3=0, flags=0):
+    packet = struct.pack(header, VERSION, msg_type, flags, seq, t1, t2, t3)
+    client_socket.sendto(packet, (server_ip, server_port))
+
+
+def compute_offset(t1, t2, t3, t4):
+    return ((t2 - t1) + (t3 - t4)) // 2
 
 
 seq_num = 1
-t1 = int(now_us())
-
-init_packet = struct.pack(header, 1, 1, 0, seq_num, t1, 0, 0)
-client_socket.sendto(init_packet, (server_ip, server_port))
+t1 = now_us()
+send_message(SYNC_REQUEST, seq_num, t1)
 
 response, _ = client_socket.recvfrom(2048)
-t4 = int(now_us())
+t4 = now_us()
 
 response_fields = struct.unpack(header, response[:header_size])
 t2 = response_fields[5]
 t3 = response_fields[6]
 
-offset = ((t2 - t1) + (t3 - t4)) / 2
+offset = compute_offset(t1, t2, t3, t4)
 print("Clock offset:", offset, "microseconds")
 
 pending = []
+sync_seq = None
+sync_t1 = None
+next_sync_time = now_us() + SYNC_INTERVAL_US
 
 try:
     while True:
-        while pending and pending[0][0] <= now_us():
-            target_local_time, command_seq, payload = heapq.heappop(pending)
+        while pending and pending[0][0] - offset <= now_us():
+            target_server_time, command_seq, payload = heapq.heappop(pending)
 
+            actual_server_time = now_us() + offset
             print("Executing action:", payload)
-            actual_local_time = now_us()
-            actual_server_time = int(actual_local_time + offset)
 
-            confirmation = (
-                f"ACTION_CONFIRM | "
-                f"Sequence: {command_seq} | "
-                f"Execution time: {actual_server_time}"
-            )
-            client_socket.sendto(confirmation.encode(), (server_ip, server_port))
+            send_message(ACTION_CONFIRM, command_seq, actual_server_time)
             print("Confirmation sent to server. Sequence:", command_seq)
 
-        if pending:
-            wait = max((pending[0][0] - now_us()) / 1000000, 0.000001)
-        else:
-            wait = None
+        if now_us() >= next_sync_time:
+            seq_num += 1
+            sync_seq = seq_num
+            sync_t1 = now_us()
+            send_message(SYNC_REQUEST, sync_seq, sync_t1)
+            next_sync_time = sync_t1 + SYNC_INTERVAL_US
 
+        deadline = next_sync_time
+        if pending:
+            deadline = min(deadline, pending[0][0] - offset)
+
+        wait = max((deadline - now_us()) / 1_000_000, MIN_WAIT_S)
         client_socket.settimeout(wait)
 
         try:
@@ -63,23 +83,32 @@ try:
         except timeout:
             continue
 
+        received_at = now_us()
+
         if len(packet) < header_size:
             continue
 
-        command_fields = struct.unpack(header, packet[:header_size])
-        command_seq = command_fields[3]
-        target_server_time = command_fields[4]
-        payload = packet[header_size:].decode()
+        fields = struct.unpack(header, packet[:header_size])
+        msg_type = fields[1]
+        packet_seq = fields[3]
 
-        print("Received command:", payload)
-        print("Sequence number:", command_seq)
+        if msg_type == SYNC_RESPONSE:
+            if packet_seq == sync_seq:
+                offset = compute_offset(sync_t1, fields[5], fields[6], received_at)
+                sync_seq = None
+                print("Clock offset updated:", offset, "microseconds")
 
-        target_local_time = target_server_time - offset
+        elif msg_type == ACTION_COMMAND:
+            target_server_time = fields[4]
+            payload = packet[header_size:].decode()
 
-        if target_local_time <= now_us():
-            print("Command expired. Dropping command.")
-        else:
-            heapq.heappush(pending, (target_local_time, command_seq, payload))
+            print("Received command:", payload)
+            print("Sequence number:", packet_seq)
+
+            if target_server_time - offset <= now_us():
+                print("Command expired. Dropping command.")
+            else:
+                heapq.heappush(pending, (target_server_time, packet_seq, payload))
 
 except KeyboardInterrupt:
     pass
