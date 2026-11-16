@@ -3,6 +3,8 @@
 A small UDP protocol where a server tells a client to perform an action at a
 specific future time. The client synchronizes its clock with the server, schedules the command against the server's clock, executes it at the deadline, and sends back a confirmation with the actual execution time so the server can measure the error.
 
+**video link** : https://youtu.be/aaEHPIWAlVA  
+
 ## Running Locally
 
 1. Clone the repo:
